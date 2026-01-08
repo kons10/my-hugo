@@ -1,0 +1,109 @@
+name: Deploy Hugo site to Pages (Hyper Speed Edition)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HUGO_VERSION: 0.128.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # 並列化可能なダウンロードを先にまとめる
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1  # 履歴を浅くして高速化
+          
+      # キャッシュ戦略 - 複数のキャッシュを並列復元
+      - name: Cache Hugo
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hugo.deb
+          key: hugo-${{ env.HUGO_VERSION }}
+          
+      - name: Cache Hugo resources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/hugo_cache
+            resources
+          key: ${{ runner.os }}-hugo-resources-${{ hashFiles('**/*.md', 'config.*', 'assets/**') }}
+          restore-keys: |
+            ${{ runner.os }}-hugo-resources-
+      
+      # Node.jsのセットアップとキャッシュ
+      - name: Setup Node.js
+        if: hashFiles('package-lock.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          
+      # Hugo CLIインストール - キャッシュヒットしない場合のみ
+      - name: Install Hugo CLI
+        run: |
+          if [ ! -f ${{ runner.temp }}/hugo.deb ]; then
+            wget -nv -O ${{ runner.temp }}/hugo.deb https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb
+          fi
+          sudo dpkg -i ${{ runner.temp }}/hugo.deb
+          
+      # Dart Sassスキップ - Hugo 0.128.0は内蔵Dart Sass使える
+      # - name: Install Dart Sass
+      #   run: sudo snap install dart-sass
+      
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+        
+      - name: Install Node.js dependencies
+        if: hashFiles('package-lock.json') != ''
+        run: npm ci --prefer-offline --no-audit
+        
+      # 並列ビルド有効化
+      - name: Build with Hugo
+        env:
+          HUGO_CACHEDIR: ${{ runner.temp }}/hugo_cache
+          HUGO_ENVIRONMENT: production
+          HUGO_NUMWORKERMULTIPLIER: 2  # CPUコア数の2倍のワーカー
+        run: |
+          hugo \
+            --minify \
+            --gc \
+            --cleanDestinationDir \
+            --baseURL "${{ steps.pages.outputs.base_url }}/"
+            
+      # 圧縮してアップロード
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+          retention-days: 1  # 保持期間短縮
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
