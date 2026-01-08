@@ -1,3 +1,4 @@
 baseURL = "https://kons10.github.io/my-hugo/"
 languageCode = "ja"
-title = "my Hugoサイト"
+title = "Kons10のHugoサイト"
+theme = "ananke"
